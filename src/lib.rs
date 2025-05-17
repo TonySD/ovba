@@ -66,6 +66,7 @@ use parser::cp_to_string;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs;
+use log::{debug, info, error};
 
 use std::{
     cell::RefCell,
@@ -256,34 +257,34 @@ impl Project {
     where
         P: AsRef<Path> + std::fmt::Debug,
     {
-        println!("[DEBUG decompress_stream_from] Чтение потока: {:?}, offset: {}", stream_path, offset);
+        debug!("decompress_stream_from: Reading stream: {:?}, offset: {}", stream_path, offset);
         let data = self.read_stream(stream_path.as_ref())?;
-        println!("[DEBUG decompress_stream_from] Прочитано {} байт из потока. Данные (первые ~20 байт после offset, если есть): {:?}", data.len(), data.get(offset..std::cmp::min(data.len(), offset + 20)));
+        debug!("decompress_stream_from: Read {} bytes from stream. Data (first ~20 bytes after offset, if any): {:?}", data.len(), data.get(offset..std::cmp::min(data.len(), offset + 20)));
 
         if offset > data.len() {
-            eprintln!("[ERROR decompress_stream_from] offset ({}) > длина данных ({})", offset, data.len());
+            error!("decompress_stream_from: offset ({}) > data length ({})", offset, data.len());
             return Err(Error::Decompressor); 
         }
         
         if data.get(offset..).map_or(true, |s| s.is_empty()) {
-            eprintln!("[ERROR decompress_stream_from] Срез данных для распаковки пуст (offset: {}, data.len(): {})", offset, data.len());
+            error!("decompress_stream_from: Data slice for decompression is empty (offset: {}, data.len(): {})", offset, data.len());
             return Err(Error::Decompressor);
         }
 
         if data.get(offset) != Some(&0x01) {
-             println!("[DEBUG decompress_stream_from] Ожидался SigByte 0x01 по смещению {}, но найден {:X?}", offset, data.get(offset));
+            error!("decompress_stream_from: Expected SigByte 0x01 at offset {}, but found {:X?}", offset, data.get(offset));
         }
 
         match parser::decompress(&data[offset..]) { 
             Ok((remainder, decompressed_data)) => {
-                println!("[DEBUG decompress_stream_from] Распаковано {} байт. Остаток после распаковки (nom): {} байт.", decompressed_data.len(), remainder.len());
+                debug!("decompress_stream_from: Decompressed {} bytes. Remainder after decompression (nom): {} bytes.", decompressed_data.len(), remainder.len());
                 if !remainder.is_empty() {
-                    println!("[DEBUG decompress_stream_from] Внимание: после распаковки остался необработанный остаток {} байт: {:?}", remainder.len(), remainder.get(..std::cmp::min(remainder.len(), 20)));
+                    debug!("decompress_stream_from: Warning: after decompression, there is an unprocessed remainder of {} bytes: {:?}", remainder.len(), remainder.get(..std::cmp::min(remainder.len(), 20)));
                 }
                 Ok(decompressed_data)
             }
             Err(e) => {
-                eprintln!("[ERROR decompress_stream_from] Ошибка nom при распаковке: {:?}", e);
+                error!("decompress_stream_from: Error nom during decompression: {:?}", e);
                 Err(Error::Decompressor)
             }
         }
@@ -378,37 +379,37 @@ impl Project {
     /// inconsistencies if module sizes/counts change significantly.
     /// Call `save()` to get the modified project bytes.
     pub fn set_module_source(&mut self, module_name: &str, new_source: &str) -> Result<()> {
-        println!("[DEBUG set_module_source] Начало для модуля: {}", module_name);
+        debug!("set_module_source: Starting for module: {}", module_name);
         let module = self
             .modules
             .iter()
             .find(|m| m.name == module_name)
             .ok_or_else(|| Error::ModuleNotFound(module_name.to_owned()))?;
-        println!("[DEBUG set_module_source] Модуль найден: {:?}, text_offset: {}", module.stream_name, module.text_offset);
+        debug!("set_module_source: Module found: {:?}, text_offset: {}", module.stream_name, module.text_offset);
 
         let stream_path = PathBuf::from("/VBA").join(&module.stream_name);
 
         // 1. Прочитать оригинальный поток модуля, чтобы получить PerformanceCache
         let original_module_stream_data = self.read_stream(&stream_path)?;
-        println!("[DEBUG set_module_source] Размер оригинального потока модуля: {}", original_module_stream_data.len());
+        debug!("set_module_source: Original module stream size: {}", original_module_stream_data.len());
 
         if module.text_offset > original_module_stream_data.len() {
-            eprintln!("[ERROR set_module_source] text_offset ({}) > длина потока ({})", module.text_offset, original_module_stream_data.len());
+            error!("set_module_source: text_offset ({}) > stream data length ({})", module.text_offset, original_module_stream_data.len());
             return Err(Error::Generic(
                 "Module text_offset exceeds stream data length".to_string(),
             ));
         }
         let performance_cache = &original_module_stream_data[..module.text_offset];
-        println!("[DEBUG set_module_source] Размер PerformanceCache: {}", performance_cache.len());
+        debug!("set_module_source: PerformanceCache size: {}", performance_cache.len());
 
         // 2. Преобразовать новый исходный код в байты
-        println!("[DEBUG set_module_source] Новый исходный код (первые 50 символов): {:.50}", new_source.replace('\n', "\\n"));
+        debug!("set_module_source: New source code (first 50 characters): {:.50}", new_source.replace('\n', "\\n"));
         let new_source_bytes = parser::string_to_cp(new_source, self.information.code_page);
-        println!("[DEBUG set_module_source] Размер нового исходного кода в байтах (до сжатия): {}", new_source_bytes.len());
+        debug!("set_module_source: New source code size (before compression): {}", new_source_bytes.len());
 
         // 3. Сжать новые байты в CompressedData (это результат parser::compress, он включает FlagByte и TokenData)
         let compressed_module_code_data = parser::compress(&new_source_bytes)?;
-        println!("[DEBUG set_module_source] Размер compressed_module_code_data (FlagByte + TokenData): {}", compressed_module_code_data.len());
+        debug!("set_module_source: Compressed module code data size (FlagByte + TokenData): {}", compressed_module_code_data.len());
 
         // 4. Сформировать CompressedChunkHeader (u16)
         // CompressedChunkHeader: [F S S S] [S S S S] [S S S S S S S S]
@@ -420,7 +421,7 @@ impl Project {
         if actual_compressed_data_length_in_chunk == 0 {
             // Не должно быть 0, т.к. parser::compress должен вернуть хотя бы FlagByte
             // или если вход пустой, то это особый случай (но VBA модули редко пустые)
-             println!("[WARN set_module_source] compressed_module_code_data имеет нулевую длину. Это неожиданно.");
+             debug!("set_module_source: compressed_module_code_data has zero length. This is unexpected.");
              // Если это возможно, нужно решить, какой заголовок ставить. Пока что оставим ошибку.
              return Err(Error::Generic("Compressed data part is empty, cannot form header".to_string()));
         }
@@ -436,7 +437,7 @@ impl Project {
 
         let chunk_header: u16 = COMPRESSED_FLAG_BIT | SIGNATURE_BITS | size_for_header_field;
         
-        println!("[DEBUG set_module_source] CompressedChunkHeader: Value=0x{:04X} (Flag:1, Sig:0b011, SizeField:{})", 
+        debug!("set_module_source: CompressedChunkHeader: Value=0x{:04X} (Flag:1, Sig:0b011, SizeField:{})", 
             chunk_header, size_for_header_field
         );
 
@@ -450,27 +451,27 @@ impl Project {
         new_module_stream_content.extend_from_slice(&chunk_header.to_le_bytes()); // CompressedChunkHeader (2 байта)
         new_module_stream_content.extend_from_slice(&compressed_module_code_data);    // CompressedData (FlagByte + TokenData)
         
-        println!("[DEBUG set_module_source] Общий размер new_module_stream_content для записи в поток: {}", new_module_stream_content.len());
+        debug!("set_module_source: Total size of new_module_stream_content for writing to stream: {}", new_module_stream_content.len());
 
         // 6. Заменить поток в CFB контейнере
-        println!("[DEBUG set_module_source] Попытка записи в CFB поток: {:?}", stream_path);
+        debug!("set_module_source: Attempting to write to CFB stream: {:?}", stream_path);
         let mut cfb = self.container.borrow_mut();
 
         if cfb.exists(&stream_path) {
-            println!("[DEBUG set_module_source] Удаление существующего потока: {:?}", stream_path);
+            debug!("set_module_source: Removing existing stream: {:?}", stream_path);
             cfb.remove_stream(&stream_path).map_err(Error::Cfb)?;
         } else {
-            println!("[DEBUG set_module_source] Поток {:?} не существует, будет создан новый.", stream_path);
+            debug!("set_module_source: Stream {:?} does not exist, will be created.", stream_path);
         }
 
         let mut stream_writer = cfb.create_stream(&stream_path).map_err(Error::Cfb)?;
-        println!("[DEBUG set_module_source] Поток создан, запись {} байт...", new_module_stream_content.len());
+        debug!("set_module_source: Stream created, writing {} bytes...", new_module_stream_content.len());
         stream_writer
             .write_all(&new_module_stream_content)
             .map_err(Error::Io)?;
-        println!("[DEBUG set_module_source] Запись в поток завершена.");
+        debug!("set_module_source: Writing to stream completed.");
         
-        println!("[DEBUG set_module_source] Завершение.");
+        debug!("set_module_source: Completion.");
         Ok(())
     }
 
@@ -506,11 +507,11 @@ impl Project {
         
         let updated_project_bytes = cursor.into_inner();
 
-        println!("[DEBUG save] Обновленный размер проекта для записи: {} байт", updated_project_bytes.len());
+        debug!("save: Updated project size for writing: {} bytes", updated_project_bytes.len());
 
         fs::write(output_path, updated_project_bytes).map_err(Error::Io)?;
         
-        println!("[DEBUG save] Проект успешно сохранен в: {:?}", output_path);
+        debug!("save: Project successfully saved to: {:?}", output_path);
         Ok(())
     }
 }
@@ -582,30 +583,31 @@ pub fn open_project(raw: Vec<u8>) -> Result<Project> {
 mod main_test {
     use super::*; // Импорт всего из lib.rs
     use std::fs;
-    use std::path::Path;
+    use std::path::Path;    
 
     fn run_vba_modification_simulation(project_path: &Path, module_to_modify: &str) -> Result<()> {
-        println!("Загрузка VBA проекта из: {:?}", project_path);
+        colog::init();
+        debug!("run_vba_modification_simulation: Loading VBA project from: {:?}", project_path);
         let initial_data = fs::read(project_path).map_err(Error::Io)?;
         
         let mut project = open_project(initial_data.clone())?; 
-        println!("Проект успешно открыт.");
+        debug!("run_vba_modification_simulation: Project successfully opened.");
 
-        println!("\nЧтение исходного кода модуля '{}' (до изменения):", module_to_modify);
+        debug!("run_vba_modification_simulation: Reading source code of module '{}' (before modification):", module_to_modify);
         match project.module_source(module_to_modify) {
             Ok(source) => {
-                println!("------------------------------------");
-                println!("{}", source);
-                println!("------------------------------------");
+                debug!("------------------------------------");
+                debug!("{}", source);
+                debug!("------------------------------------");
             }
             Err(e) => {
-                eprintln!("Ошибка чтения исходного кода модуля '{}': {:?}", module_to_modify, e);
+                error!("run_vba_modification_simulation: Error reading source code of module '{}': {:?}", module_to_modify, e);
                 if project.modules.is_empty() {
-                    println!("Распарсенных модулей в проекте не найдено.");
+                    error!("run_vba_modification_simulation: No parsed modules found in the project.");
                 } else {
-                    println!("\nРаспарсенные модули в проекте:");
+                    error!("run_vba_modification_simulation: Parsed modules in the project:");
                     for m in &project.modules {
-                        println!(" - Имя: {}, Поток: {}", m.name, m.stream_name);
+                        error!(" - Имя: {}, Поток: {}", m.name, m.stream_name);
                     }
                 }
                 return Err(e);
@@ -614,37 +616,37 @@ mod main_test {
 
         let original_source = project.module_source(module_to_modify)?;
         let modified_source = format!("{}\n' This is a test\n", original_source);
-        println!("\nИзменение исходного кода модуля '{}'...", module_to_modify);
+        debug!("run_vba_modification_simulation: Modifying source code of module '{}'...", module_to_modify);
         project.set_module_source(module_to_modify, &modified_source)?;
-        println!("Исходный код модуля '{}' обновлен в памяти.", module_to_modify);
+        debug!("run_vba_modification_simulation: Source code of module '{}' updated in memory.", module_to_modify);
 
-        println!("\nСохранение изменений в файл...");
+        debug!("run_vba_modification_simulation: Saving changes to file...");
         let output_file_path = project_path.with_file_name(format!("{}_patched.bin", project_path.file_stem().unwrap_or_default().to_string_lossy()));
         project.save(&output_file_path)?;
-        println!("Изменения сохранены в файл: {:?}", output_file_path);
-        println!("Оригинальный экземпляр 'project' больше не должен использоваться для операций с CFB.");
+        debug!("run_vba_modification_simulation: Changes saved to file: {:?}", output_file_path);
+        debug!("run_vba_modification_simulation: Original 'project' instance should no longer be used for CFB operations.");
 
         // ТЕПЕРЬ ПРОВЕРЯЕМ ЗАГРУЗКОЙ ИЗ СОХРАНЕННОГО ФАЙЛА
-        println!("\nЧтение и проверка сохраненного файла: {:?}", output_file_path);
+        debug!("run_vba_modification_simulation: Reading and checking saved file: {:?}", output_file_path);
         let patched_data = fs::read(&output_file_path).map_err(Error::Io)?;
         let patched_project = open_project(patched_data)?; // Загружаем в новый экземпляр
 
-        println!("\nЧтение исходного кода модуля '{}' из перезагруженного проекта:", module_to_modify);
+        debug!("run_vba_modification_simulation: Reading source code of module '{}' from reloaded project:", module_to_modify);
         match patched_project.module_source(module_to_modify) {
             Ok(source) => {
-                println!("------------------------------------");
-                println!("{}", source);
-                println!("------------------------------------");
+                debug!("------------------------------------");
+                debug!("{}", source);
+                debug!("------------------------------------");
 
                 if source.contains("' This is a test") {
-                    println!("\nУСПЕХ: Изменения найдены в сохраненном и перезагруженном файле!");
+                    debug!("run_vba_modification_simulation: Success: Changes found in saved and reloaded file!");
                 } else {
-                    eprintln!("\nОШИБКА: Изменения НЕ найдены в сохраненном и перезагруженном файле!");
+                    error!("run_vba_modification_simulation: Error: Changes NOT found in saved and reloaded file!");
                     return Err(Error::Generic("Verification failed: Changes not found in reloaded file".to_string())); // Возвращаем ошибку, чтобы тест упал
                 }
             }
             Err(e) => {
-                eprintln!("Ошибка чтения исходного кода модуля из сохраненного файла: {:?}", e);
+                error!("run_vba_modification_simulation: Error reading source code of module from saved file: {:?}", e);
                 return Err(e);
             }
         }
@@ -655,26 +657,26 @@ mod main_test {
     #[test]
     fn test_vba_modification() {
         // !!! ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ !!!
-        let project_file_path_str = "/tmp/tmp.wnwowFBJ8k/ovba/test/vbaProject.bin"; // Например, "tests/test-files/vbaProject.bin"
+        let project_file_path_str = "test/vbaProject.bin"; // Например, "tests/test-files/vbaProject.bin"
         let module_name = "NewMacros"; // Например, "Module1" или имя существующего модуля
         // !!! КОНЕЦ ЗАМЕНЫ !!!
 
         let project_file_path = Path::new(project_file_path_str);
 
         if !project_file_path.exists() {
-            eprintln!("Тестовый файл VBA проекта {:?} не найден. Тест будет проигнорирован.", project_file_path);
+            error!("test_vba_modification: Test VBA project file {:?} not found. Test will be ignored.", project_file_path);
             // Чтобы тест не падал, а просто игнорировался, если файла нет, можно сделать так:
             //eprintln!("Пожалуйста, создайте файл или укажите правильный путь.");
             //return; // Игнорировать тест, если файла нет.
             // Или паниковать, чтобы CI видел проблему:
-            panic!("Тестовый файл vbaProject.bin не найден по пути: {:?}. Пожалуйста, создайте его или исправьте путь.", project_file_path);
+            panic!("Test file vbaProject.bin not found at path: {:?}. Please create it or fix the path.", project_file_path);
         }
 
         match run_vba_modification_simulation(project_file_path, module_name) {
-            Ok(_) => println!("\nСимуляция модификации VBA успешно завершена для модуля '{}'.", module_name),
+            Ok(_) => debug!("test_vba_modification: VBA modification simulation successfully completed for module '{}'.", module_name),
             Err(e) => {
-                eprintln!("\nОшибка в симуляции модификации VBA для модуля '{}': {:?}", module_name, e);
-                panic!("Тест модификации VBA провален: {:?}", e); // Падение теста при ошибке
+                error!("test_vba_modification: Error in VBA modification simulation for module '{}': {:?}", module_name, e);
+                panic!("Test modification of VBA failed: {:?}", e); // Падение теста при ошибке
             }
         }
     }
