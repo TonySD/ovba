@@ -22,6 +22,8 @@ pub enum Error {
     Parser,
     /// Requested module cannot be found.
     ModuleNotFound(string::String),
+    /// A generic error with a description.
+    Generic(string::String),
 }
 
 impl From<io::Error> for Error {
@@ -41,6 +43,7 @@ impl error::Error for Error {
             Error::Decompressor => None,
             Error::Parser => None,
             Error::ModuleNotFound(_) => None,
+            Error::Generic(_) => None,
         }
     }
 }
@@ -53,6 +56,7 @@ impl fmt::Display for Error {
             Error::Decompressor => write!(f, "Decompressor error"),
             Error::Parser => write!(f, "Parse error"),
             Error::ModuleNotFound(name) => write!(f, r#"Module "{}" not found"#, name),
+            Error::Generic(s) => write!(f, "Generic error: {}", s),
         }
     }
 }
