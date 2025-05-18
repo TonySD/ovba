@@ -1,12 +1,12 @@
 [package]
-name = "ovba"
+name = "ovba-tonysd-fork"
 version = "0.7.1"
-authors = ["Tim Weis <tim.weis@outlook.com>"]
-description = "An Office VBA project parser written in 100% safe Rust."
+authors = ["Tim Weis <tim.weis@outlook.com>", "TonySD <whoami.ctf@yandex.ru>"]
+description = "An Office VBA project parser written in 100% safe Rust. Added ability writing source code."
 edition = "2018"
 exclude = [".gitignore", "docs/dev/**", ".github/**"]
 license-file = "LICENSE"
-repository = "https://github.com/tim-weis/ovba"
+repository = "https://github.com/TonySD/ovba"
 documentation = "https://docs.rs/ovba"
 readme = "README.md"
 keywords = ["parser", "office", "vba"]
